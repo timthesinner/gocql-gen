@@ -1,5 +1,7 @@
 [
   {"name":"field1", "type":"text", "key":"partition"},
-  {"name":"field2", "type":"text", "key":"cluster-ordered"},
-  {"name":"field3", "type":"text", "key":"partition"}
+  {"name":"field2", "type":"text", "key":"cluster-asc"},
+  {"name":"field3", "type":"text", "key":"partition"},
+  {"name":"field4", "type":"uuid", "key":"cluster-desc"},
+  {"name":"field5", "type":"uuid"}
 ]
