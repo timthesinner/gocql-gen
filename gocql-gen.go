@@ -26,13 +26,13 @@ func Usage() {
 }
 
 type columnDef struct {
-	Name string `json:"name"`
-	Type string `json:"type"`
-	Key  string `json:"key"`
+	Name    string `json:"name"`
+	CqlType string `json:"type"`
+	Key     string `json:"key"`
 }
 
 func (c *columnDef) String() string {
-	return fmt.Sprintf("{Name:%v,Type:%v,Key:%v}", c.Name, c.Type, c.Key)
+	return fmt.Sprintf("{Name:%v,Type:%v,Key:%v}", c.Name, c.CqlType, c.Key)
 }
 
 func main() {
@@ -66,7 +66,7 @@ func main() {
 		clusteringColumns := []string{}
 		clusteringOrder := []string{}
 		for _, col := range columns {
-			model.Columns = append(model.Columns, col.Name+" "+col.Type)
+			//model.Columns = append(model.Columns, col.Name+" "+col.CqlType)
 			switch col.Key {
 			case "partition":
 				model.partitioningKeys = append(model.partitioningKeys, col.Name)
@@ -83,16 +83,16 @@ func main() {
 				clusteringOrder = append(clusteringOrder, col.Name+" DESC")
 			}
 
-			selectParam := &param{Name: col.Name}
-			switch col.Type {
+			column := &param{Name: col.Name, CqlType: col.CqlType}
+			switch col.CqlType {
 			case "text":
-				selectParam.Type = "string"
+				column.GoType = "string"
 			case "uuid", "timeuuid":
-				selectParam.Type = "*gocql.UUID"
+				column.GoType = "*gocql.UUID"
 			default:
-				selectParam.Type = "UNKNOWN"
+				column.GoType = "UNKNOWN"
 			}
-			model.SelectParameters = append(model.SelectParameters, selectParam)
+			model.Columns = append(model.Columns, column)
 		}
 
 		model.InitPartitioningKeys()
@@ -109,8 +109,9 @@ func main() {
 }
 
 type param struct {
-	Name string
-	Type string
+	Name    string
+	GoType  string
+	CqlType string
 }
 
 type _DAOModel struct {
@@ -123,14 +124,21 @@ type _DAOModel struct {
 
 	Keyspace          string
 	Table             string
-	Columns           []string
 	PartioningKeys    string
 	ClusteringColumns string
 	ClusteringOrder   string
-	SelectParameters  []*param
+	Columns           []*param
 
 	partitioningKeys []string
 	keys             []string
+}
+
+func (m _DAOModel) TableDefinition() template.HTML {
+	params := make([]string, len(m.Columns))
+	for i, p := range m.Columns {
+		params[i] = p.Name + " " + p.CqlType
+	}
+	return template.HTML(strings.Join(params, ", "))
 }
 
 func (m *_DAOModel) InitPartitioningKeys() {
@@ -159,8 +167,8 @@ func (m *_DAOModel) InitClusteringOrder(keys []string) {
 }
 
 func (m _DAOModel) GetScanParameters() template.HTML {
-	params := make([]string, len(m.SelectParameters))
-	for i, p := range m.SelectParameters {
+	params := make([]string, len(m.Columns))
+	for i, p := range m.Columns {
 		params[i] = "&" + p.Name
 	}
 	return template.HTML(strings.Join(params, ", "))
@@ -176,24 +184,24 @@ func (m _DAOModel) EmitStream() template.HTML {
 }
 
 func (m _DAOModel) InsertFields() template.HTML {
-	params := make([]string, len(m.SelectParameters))
-	for i, p := range m.SelectParameters {
+	params := make([]string, len(m.Columns))
+	for i, p := range m.Columns {
 		params[i] = p.Name
 	}
 	return template.HTML(strings.Join(params, ", "))
 }
 
 func (m _DAOModel) InsertValues() template.HTML {
-	params := make([]string, len(m.SelectParameters))
-	for i := range m.SelectParameters {
+	params := make([]string, len(m.Columns))
+	for i := range m.Columns {
 		params[i] = "?"
 	}
 	return template.HTML(strings.Join(params, ", "))
 }
 
 func (m _DAOModel) InsertResource() template.HTML {
-	params := make([]string, len(m.SelectParameters))
-	for i, p := range m.SelectParameters {
+	params := make([]string, len(m.Columns))
+	for i, p := range m.Columns {
 		params[i] = "r." + p.Name
 	}
 	return template.HTML(strings.Join(params, ", "))
@@ -253,8 +261,7 @@ type {{.Model}}Stream struct {
 
 func (dao *{{.DAO}}) Init(session *gocql.Session) (error) {
   return session.Query(` + "`" + `CREATE TABLE IF NOT EXISTS {{.Keyspace}}.{{.Table}} (
-    {{range .Columns}}{{.}},
-    {{end}}
+    {{.TableDefinition}},
 
     PRIMARY KEY ({{.PartioningKeys}}{{.ClusteringColumns}})
   ){{.ClusteringOrder}};` + "`" + `).Exec()
@@ -326,13 +333,13 @@ func (dao *{{.DAO}}) stream(cql string, params ...interface{}) chan *{{.Model}}S
       session.SetPageSize(dao.pageSize())
 
       var (
-        {{range .SelectParameters}}{{.Name}} {{.Type}}
+        {{range .Columns}}{{.Name}} {{.GoType}}
         {{end}})
 
       iter := session.Query(cql, params...).Iter()
       for iter.Scan({{.GetScanParameters}}) {
         resource := &{{.ModelImport}}{{.Model}}{
-          {{range .SelectParameters}}{{.Name}}: {{.Name}},
+          {{range .Columns}}{{.Name}}: {{.Name}},
           {{end}}}
         {{.EmitStream}}{DTO: resource, ERR: nil}
       }
@@ -348,14 +355,14 @@ func (dao *{{.DAO}}) stream(cql string, params ...interface{}) chan *{{.Model}}S
 
 func (dao *{{.DAO}}) list(session *gocql.Session, cql string, params ...interface{}) ([]*{{.ModelImport}}{{.Model}}, error) {
   var (
-    {{range .SelectParameters}}{{.Name}} {{.Type}}
+    {{range .Columns}}{{.Name}} {{.GoType}}
     {{end}})
 
   iter := session.Query(cql, params...).Iter()
   results := make([]*{{.ModelImport}}{{.Model}}, 4)
   for iter.Scan({{.GetScanParameters}}) {
     resource := &{{.ModelImport}}{{.Model}}{
-      {{range .SelectParameters}}{{.Name}}: {{.Name}},
+      {{range .Columns}}{{.Name}}: {{.Name}},
       {{end}}}
     results = append(results, resource)
   }
