@@ -11,18 +11,24 @@ import (
 )
 
 var (
-	model = flag.String("model", "", "Input model type, must have a corresponding .json file")
+	table = flag.String("table", "", "Table definition, must correspond to a .json file")
 	dao   = flag.String("dao", "", "DAO type; resulting output file srcdir/<dao>_gen.go")
 )
 
 // Usage is a replacement usage function for the flags package.
 func Usage() {
 	fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
-	fmt.Fprintf(os.Stderr, "\tgocql-gen [flags] -model T -dao S\n")
+	fmt.Fprintf(os.Stderr, "\tgocql-gen [flags] -table <T.json> -dao S\n")
 	fmt.Fprintf(os.Stderr, "For more information, see:\n")
 	fmt.Fprintf(os.Stderr, "\thttps://github.com/timthesinner/gocql-gen\n")
 	fmt.Fprintf(os.Stderr, "Flags:\n")
 	flag.PrintDefaults()
+}
+
+type tableDef struct {
+	Model   string       `json:"modelName"`
+	Table   string       `json:"tableName"`
+	Columns []*columnDef `json:"columns"`
 }
 
 type columnDef struct {
@@ -30,6 +36,13 @@ type columnDef struct {
 	CqlType             string `json:"type"`
 	Key                 string `json:"key"`
 	DeserializeFromBlob string `json:"deserializeTo"`
+}
+
+type persistDef struct {
+	Keyspace          string   `json:"keyspace"`
+	Package           string   `json:"package"`
+	AdditionalImports []string `json:"imports"`
+	ModelImport       string   `json:"modelPackage"`
 }
 
 func (c *columnDef) String() string {
@@ -42,7 +55,7 @@ func main() {
 	flag.Usage = Usage
 	flag.Parse()
 
-	if len(*model) == 0 {
+	if len(*table) == 0 {
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -52,19 +65,30 @@ func main() {
 		os.Exit(2)
 	}
 
-	if m, err := os.Open(*model + ".json"); err != nil {
+	var persist *persistDef
+	var table_def *tableDef
+	if p, err := os.Open("persist-config.json"); err != nil {
 		log.Fatal(err)
+	} else if err := json.NewDecoder(p).Decode(&persist); err != nil {
+		log.Fatal(err)
+	} else if m, err := os.Open(*table + ".json"); err != nil {
+		log.Fatal(err)
+	} else if err := json.NewDecoder(m).Decode(&table_def); err != nil {
+		log.Fatal(err)
+	} else if len(table_def.Columns) == 0 {
+		log.Fatalf("The %v column definition was empty.", *table)
 	} else {
-		var columns []*columnDef
-		json.NewDecoder(m).Decode(&columns)
-		if len(columns) == 0 {
-			log.Fatalf("The %v column definition was empty.", *model)
-			os.Exit(1)
+		model := _DAOModel{
+			Keyspace:          persist.Keyspace,
+			Package:           persist.Package,
+			AdditionalImports: persist.AdditionalImports,
+			ModelImport:       persist.ModelImport,
+			Model:             table_def.Model,
+			Table:             table_def.Table,
+			DAO:               *dao,
 		}
 
-		model := _DAOModel{Package: "TBD", AdditionalImports: "TBD", Model: *model, DAO: *dao}
-
-		for _, col := range columns {
+		for _, col := range table_def.Columns {
 			//model.Columns = append(model.Columns, col.Name+" "+col.CqlType)
 			switch col.Key {
 			case "partition":
@@ -102,8 +126,9 @@ func main() {
 
 		if template, err := template.New("DaoTemplate").Parse(_DAOTemplate); err != nil {
 			log.Fatalf("DAOTemplate was not legal: %v", err)
-			os.Exit(1)
-		} else if err := template.Execute(os.Stdout, model); err != nil {
+		} else if dao, err := os.Create(strings.ToLower(fmt.Sprintf("%v_dao.go", *dao))); err != nil {
+			log.Fatalf("Could not create dao_gen source file: %v", err)
+		} else if err := template.Execute(dao, model); err != nil {
 			log.Fatalf("Error executing template: %v", err)
 		}
 	}
@@ -118,7 +143,7 @@ type param struct {
 
 type _DAOModel struct {
 	Package           string
-	AdditionalImports string
+	AdditionalImports []string
 	Model             string
 	ModelImport       string
 	DAO               string
@@ -135,6 +160,21 @@ type _DAOModel struct {
 
 func (m _DAOModel) Arguments() template.HTML {
 	return template.HTML(strings.Join(os.Args[1:], " "))
+}
+
+func (m _DAOModel) CleanAdditionalImports() template.HTML {
+	res := make([]string, len(m.AdditionalImports))
+	for i, im := range m.AdditionalImports {
+		res[i] = "  " + im
+	}
+	return template.HTML(strings.Join(res, "\n"))
+}
+
+func (m _DAOModel) ModelType() template.HTML {
+	if m.ModelImport == "" {
+		return template.HTML(m.Model)
+	}
+	return template.HTML(m.ModelImport + "." + m.Model)
 }
 
 func (m _DAOModel) TableDefinition() template.HTML {
@@ -325,11 +365,11 @@ import (
 
   "github.com/gocql/gocql"
 
-  {{.AdditionalImports}}
+{{.CleanAdditionalImports}}
 )
 
 type {{.Model}}Stream struct {
-  DTO *{{.ModelImport}}{{.Model}}
+  DTO *{{.ModelType}}
   ERR error
 }
 
@@ -341,7 +381,7 @@ func (dao *{{.DAO}}) Init(session *gocql.Session) (error) {
   ){{.ClusteringOrder}};` + "`" + `).Exec()
 }
 
-func (dao *{{.DAO}}) Get({{.SelectSingleKeys}} interface{}, _session ...*gocql.Session) (*{{.ModelImport}}{{.Model}}, error) {
+func (dao *{{.DAO}}) Get({{.SelectSingleKeys}} interface{}, _session ...*gocql.Session) (*{{.ModelType}}, error) {
   session, err, close := dao.session(_session...)
   if err != nil {
     return nil, err
@@ -358,7 +398,7 @@ func (dao *{{.DAO}}) Get({{.SelectSingleKeys}} interface{}, _session ...*gocql.S
   }
 }
 
-func (dao *{{.DAO}}) List({{.SelectListKeys}} interface{}, _session ...*gocql.Session) ([]*{{.ModelImport}}{{.Model}}, error) {
+func (dao *{{.DAO}}) List({{.SelectListKeys}} interface{}, _session ...*gocql.Session) ([]*{{.ModelType}}, error) {
   session, err, close := dao.session(_session...)
   if err != nil {
     return nil, err
@@ -384,7 +424,7 @@ func (dao *{{.DAO}}) session(_session ...*gocql.Session) (*gocql.Session, error,
   return _session[0], nil, false
 }
 
-func (dao *{{.DAO}}) add(r *{{.ModelImport}}{{.Model}}, session *gocql.Session) (*{{.ModelImport}}{{.Model}}, error) { {{.SerializeParameters}}
+func (dao *{{.DAO}}) add(r *{{.ModelType}}, session *gocql.Session) (*{{.ModelType}}, error) { {{.SerializeParameters}}
   err := session.Query(` + "`" + `INSERT INTO {{.Keyspace}}.{{.Table}} ({{.InsertFields}})
                       VALUES ({{.InsertValues}});` + "`" + `,
                       {{.InsertResource}}).Exec()
@@ -413,7 +453,7 @@ func (dao *{{.DAO}}) stream(cql string, params ...interface{}) chan *{{.Model}}S
 
       iter := session.Query(cql, params...).Iter()
       for iter.Scan({{.GetScanParameters}}) {
-        resource := &{{.ModelImport}}{{.Model}}{
+        resource := &{{.ModelType}}{
 {{.CreateResourceFromParameters}}
         }
         {{.DeserializeParameters}}
@@ -431,15 +471,15 @@ func (dao *{{.DAO}}) stream(cql string, params ...interface{}) chan *{{.Model}}S
   return stream
 }
 
-func (dao *{{.DAO}}) list(session *gocql.Session, cql string, params ...interface{}) ([]*{{.ModelImport}}{{.Model}}, error) {
+func (dao *{{.DAO}}) list(session *gocql.Session, cql string, params ...interface{}) ([]*{{.ModelType}}, error) {
   var (
     {{range .Columns}}{{.Name}} {{.GoType}}
     {{end}})
 
   iter := session.Query(cql, params...).Iter()
-  results := make([]*{{.ModelImport}}{{.Model}}, dao.capacity())
+  results := make([]*{{.ModelType}}, dao.capacity())
   for iter.Scan({{.GetScanParameters}}) {
-    resource := &{{.ModelImport}}{{.Model}}{
+    resource := &{{.ModelType}}{
 {{.CreateResourceFromParameters}}
     }
     {{.DeserializeParameters}}
