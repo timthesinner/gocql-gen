@@ -27,9 +27,10 @@ func Usage() {
 }
 
 type tableDef struct {
-	Model   string       `json:"modelName"`
-	Table   string       `json:"tableName"`
-	Columns []*columnDef `json:"columns"`
+	Model         string       `json:"modelName"`
+	Table         string       `json:"tableName"`
+	GeneratedName string       `json:"generatedName"`
+	Columns       []*columnDef `json:"columns"`
 }
 
 type columnDef struct {
@@ -135,7 +136,7 @@ func main() {
 
 		if template, err := template.New("DaoTemplate").Parse(_DAOTemplate); err != nil {
 			log.Fatalf("DAOTemplate was not legal: %v", err)
-		} else if dao, err := os.Create(strings.ToLower(fmt.Sprintf("%v_dao.go", *dao))); err != nil {
+		} else if dao, err := os.Create(strings.ToLower(fmt.Sprintf("%v_gen.go", table_def.GeneratedName))); err != nil {
 			log.Fatalf("Could not create dao_gen source file: %v", err)
 		} else if err := template.Execute(dao, model); err != nil {
 			log.Fatalf("Error executing template: %v", err)
