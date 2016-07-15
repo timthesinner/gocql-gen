@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -8,7 +9,10 @@ import (
 	"log"
 	"os"
 	"path"
+	"regexp"
 	"strings"
+
+	"go/format"
 )
 
 var (
@@ -46,6 +50,8 @@ type persistDef struct {
 	AdditionalImports []string `json:"imports"`
 	ModelImport       string   `json:"modelPackage"`
 }
+
+var COLLECTION_REGEX = regexp.MustCompile(`list<(.*)>|set<(.*)>`)
 
 func (c *columnDef) String() string {
 	return fmt.Sprintf("{Name:%v,Type:%v,Key:%v}", c.Name, c.CqlType, c.Key)
@@ -96,6 +102,7 @@ func main() {
 			Model:             table_def.Model,
 			Table:             table_def.Table,
 			DAO:               *dao,
+			IncludeTime:       false,
 		}
 
 		for _, col := range table_def.Columns {
@@ -122,24 +129,58 @@ func main() {
 				column.GoType = "string"
 			case "uuid", "timeuuid":
 				column.GoType = "*gocql.UUID"
+			case "int":
+				column.GoType = "int"
+			case "double":
+				column.GoType = "float64"
+			case "timestamp":
+				column.GoType = "*time.Time"
+				model.IncludeTime = true
 			case "list<blob>":
 				column.GoType = "[][]byte"
 				column.SerializedType = col.DeserializeFromBlob
-			case "map<string,blob>":
+			case "map<text,blob>":
 				column.GoType = "map[string][]byte"
 				column.SerializedType = col.DeserializeFromBlob
 			default:
-				column.GoType = "UNKNOWN"
+				if match := COLLECTION_REGEX.FindStringSubmatch(col.CqlType); len(match) == 3 {
+					t := match[1]
+					if t == "" {
+						t = match[2]
+					}
+					switch t {
+					case "text":
+						column.GoType = "[]string"
+					case "uuid", "timeuuid":
+						column.GoType = "[]*gocql.UUID"
+					case "timestamp":
+						column.GoType = "[]time.Time"
+						model.IncludeTime = true
+					case "int":
+						column.GoType = "[]int"
+					case "double":
+						column.GoType = "[]float64"
+					case "blob":
+						column.GoType = "[][]byte"
+					}
+				}
 			}
 			model.Columns = append(model.Columns, column)
 		}
 
+		var result bytes.Buffer
 		if template, err := template.New("DaoTemplate").Parse(_DAOTemplate); err != nil {
 			log.Fatalf("DAOTemplate was not legal: %v", err)
 		} else if dao, err := os.Create(strings.ToLower(fmt.Sprintf("%v_gen.go", table_def.GeneratedName))); err != nil {
 			log.Fatalf("Could not create dao_gen source file: %v", err)
-		} else if err := template.Execute(dao, model); err != nil {
+		} else if err := template.Execute(&result, model); err != nil {
 			log.Fatalf("Error executing template: %v", err)
+		} else if res, err := format.Source(result.Bytes()); err != nil {
+			log.Fatalf("Error formatting template: %v", err)
+		} else if i, err := dao.Write(res); err != nil {
+			log.Fatalf("Error writing template: %v", err)
+		} else if i != len(res) {
+			log.Fatalf("Did not write all template bytes")
 		}
 	}
 }
@@ -154,6 +195,7 @@ type param struct {
 type _DAOModel struct {
 	Package           string
 	AdditionalImports []string
+	IncludeTime       bool
 	Model             string
 	ModelImport       string
 	DAO               string
@@ -177,6 +219,11 @@ func (m _DAOModel) CleanAdditionalImports() template.HTML {
 	for i, im := range m.AdditionalImports {
 		res[i] = "  " + im
 	}
+
+	if m.IncludeTime {
+		res = append(res, "time")
+	}
+
 	return template.HTML(strings.Join(res, "\n"))
 }
 
@@ -295,7 +342,7 @@ func (m _DAOModel) CreateResourceFromParameters() template.HTML {
 			resource[i] = fmt.Sprintf("          %v: %v", c.Name, c.Name)
 		} else if c.CqlType == "list<blob>" {
 			resource[i] = fmt.Sprintf("          %v: make([]%v, 0)", c.Name, c.SerializedType)
-		} else if c.CqlType == "map<string,blob>" {
+		} else if c.CqlType == "map<text,blob>" {
 			resource[i] = fmt.Sprintf("          %v: make(map[string]%v)", c.Name, c.SerializedType)
 		}
 	}
@@ -313,7 +360,7 @@ func (m _DAOModel) DeserializeParameters() template.HTML {
       json.Unmarshal(v, &value)
       resource.%v = append(resource.%v, value)
     }`, c.Name, c.SerializedType, c.Name, c.Name))
-			} else if c.CqlType == "map<string,blob>" {
+			} else if c.CqlType == "map<text,blob>" {
 				deser = append(deser, fmt.Sprintf(`
     for k, v := range %v {
       var value %v
@@ -333,17 +380,17 @@ func (m _DAOModel) SerializeParameters() template.HTML {
 			if c.CqlType == "list<blob>" {
 				ser = append(ser, fmt.Sprintf(`
   %v := make([][]byte, 0)
-  for _, v := range resource.%v {
+  for _, v := range r.%v {
     if value, err := json.Marshal(v); err == nil {
       %v = append(%v, value)
     } else {
       fmt.Println("Could not marshal value:", err, v)
     }
   }`, c.Name, c.Name, c.Name, c.Name))
-			} else if c.CqlType == "map<string,blob>" {
+			} else if c.CqlType == "map<text,blob>" {
 				ser = append(ser, fmt.Sprintf(`
   %v := make(map[string][]byte)
-  for k, v := range resource.%v {
+  for k, v := range r.%v {
     if value, err := json.Marshal(v); err == nil {
       %v[k] = value
     } else {
@@ -367,11 +414,6 @@ package {{.Package}}
 import (
   "encoding/json"
   "fmt"
-  "net/http"
-  "os"
-  "path"
-  "strconv"
-  "time"
 
   "github.com/gocql/gocql"
 
