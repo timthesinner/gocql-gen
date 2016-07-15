@@ -3,5 +3,7 @@
   {"name":"field2", "type":"text", "key":"cluster-asc"},
   {"name":"field3", "type":"text", "key":"partition"},
   {"name":"field4", "type":"uuid", "key":"cluster-desc"},
-  {"name":"field5", "type":"uuid"}
+  {"name":"field5", "type":"uuid"},
+  {"name":"field6", "type":"list<blob>", "deserializeTo":"*model.CommitFileDTO"},
+  {"name":"field7", "type":"map<string,blob>", "deserializeTo":"interface{}"}
 ]
