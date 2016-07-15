@@ -425,7 +425,7 @@ func (dao *{{.DAO}}) Stream({{.SelectListKeys}} interface{}) chan *{{.Model}}Str
 
 func (dao *{{.DAO}}) session(_session ...*gocql.Session) (*gocql.Session, error, bool) {
   if _session == nil || len(_session) != 1 || _session[0] == nil {
-    if session, err := dao.CreateSession(); err != nil {
+    if session, err := dao.createSession(); err != nil {
       return nil, err, false
     } else {
       return session, nil, true
@@ -450,7 +450,7 @@ func (dao *{{.DAO}}) stream(cql string, params ...interface{}) chan *{{.Model}}S
   go func() {
     defer close(stream)
 
-    if session, err := dao.CreateSession(); err != nil {
+    if session, err := dao.createSession(); err != nil {
       fmt.Println("Could not initialize sesion to stream resources for {{.Table}}", err)
       {{.EmitStream}}{DTO: nil, ERR: err}
     } else {
