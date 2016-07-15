@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"log"
 	"os"
+	"path"
 	"strings"
 )
 
@@ -49,6 +50,14 @@ func (c *columnDef) String() string {
 	return fmt.Sprintf("{Name:%v,Type:%v,Key:%v}", c.Name, c.CqlType, c.Key)
 }
 
+func open(file string) (*os.File, error) {
+	f, err := os.Open(file)
+	if err != nil {
+		return os.Open(path.Join("config", file))
+	}
+	return f, nil
+}
+
 func main() {
 	log.SetFlags(0)
 	log.SetPrefix("gocql-gen: ")
@@ -67,11 +76,11 @@ func main() {
 
 	var persist *persistDef
 	var table_def *tableDef
-	if p, err := os.Open("persist-config.json"); err != nil {
+	if p, err := open("persist-config.json"); err != nil {
 		log.Fatal(err)
 	} else if err := json.NewDecoder(p).Decode(&persist); err != nil {
 		log.Fatal(err)
-	} else if m, err := os.Open(*table + ".json"); err != nil {
+	} else if m, err := open(*table + ".json"); err != nil {
 		log.Fatal(err)
 	} else if err := json.NewDecoder(m).Decode(&table_def); err != nil {
 		log.Fatal(err)
