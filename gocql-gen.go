@@ -315,6 +315,14 @@ func (m _DAOModel) SelectSingleKeys() template.HTML {
 	return template.HTML(strings.Join(m.keys, ", "))
 }
 
+func (m _DAOModel) DeleteKeys() template.HTML {
+	keys := make([]string, len(m.keys))
+	for i, k := range m.keys {
+		keys[i] = "r." + k
+	}
+	return template.HTML(strings.Join(keys, ", "))
+}
+
 func (m _DAOModel) SelectSingle() template.HTML {
 	keys := make([]string, len(m.keys))
 	for i, k := range m.keys {
@@ -433,6 +441,16 @@ func (dao *{{.DAO}}) Init(session *gocql.Session) (error) {
   ){{.ClusteringOrder}};` + "`" + `).Exec()
 }
 
+func (dao *{{.DAO}}) Add(r *{{.ModelType}}, session *gocql.Session) (*{{.ModelType}}, error) { {{.SerializeParameters}}
+  err := session.Query(` + "`" + `INSERT INTO {{.Keyspace}}.{{.Table}} ({{.InsertFields}})
+                      VALUES ({{.InsertValues}});` + "`" + `,
+                      {{.InsertResource}}).Exec()
+  if err != nil {
+    return nil, err
+  }
+  return r, nil
+}
+
 func (dao *{{.DAO}}) Get({{.SelectSingleKeys}} interface{}, _session ...*gocql.Session) (*{{.ModelType}}, error) {
   session, err, close := dao.session(_session...)
   if err != nil {
@@ -465,6 +483,17 @@ func (dao *{{.DAO}}) Stream({{.SelectListKeys}} interface{}) chan *{{.Model}}Str
   return dao.stream(` + "`" + `SELECT {{.InsertFields}} FROM {{.Keyspace}}.{{.Table}} WHERE {{.SelectList}};` + "`" + `, {{.SelectListKeys}})
 }
 
+func (dao *{{.DAO}}) Delete(r *{{.ModelType}}, _session ...*gocql.Session) error {
+  session, err, close := dao.session(_session...)
+  if err != nil {
+    return nil, err
+  } else if close {
+    defer session.Close()
+  }
+
+  return dao.delete(` + "`" + `DELETE FROM {{.Keyspace}}.{{.Table}} WHERE {{.SelectSingle}};` + "`" + `, {{.DeleteKeys}})
+}
+
 func (dao *{{.DAO}}) session(_session ...*gocql.Session) (*gocql.Session, error, bool) {
   if _session == nil || len(_session) != 1 || _session[0] == nil {
     if session, err := dao.createSession(); err != nil {
@@ -474,16 +503,6 @@ func (dao *{{.DAO}}) session(_session ...*gocql.Session) (*gocql.Session, error,
     }
   }
   return _session[0], nil, false
-}
-
-func (dao *{{.DAO}}) add(r *{{.ModelType}}, session *gocql.Session) (*{{.ModelType}}, error) { {{.SerializeParameters}}
-  err := session.Query(` + "`" + `INSERT INTO {{.Keyspace}}.{{.Table}} ({{.InsertFields}})
-                      VALUES ({{.InsertValues}});` + "`" + `,
-                      {{.InsertResource}}).Exec()
-  if err != nil {
-    return nil, err
-  }
-  return r, nil
 }
 
 func (dao *{{.DAO}}) stream(cql string, params ...interface{}) chan *{{.Model}}Stream {
@@ -545,6 +564,10 @@ func (dao *{{.DAO}}) list(session *gocql.Session, cql string, params ...interfac
   }
 
   return results, nil
+}
+
+func (dao *{{.DAO}}) delete(session *gocql.Session, cql string, params ...interface{}) error {
+  return session.Query(cql, params...).Exec()
 }
 
 `
