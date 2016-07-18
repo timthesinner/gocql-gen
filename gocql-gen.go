@@ -584,8 +584,23 @@ func (dao *{{.DAO}}) List({{.SelectListKeys}} interface{}, _session ...*gocql.Se
   return dao.list(session, ` + "`" + `SELECT {{.InsertFields}} FROM {{.Keyspace}}.{{.Table}} WHERE {{.SelectList}};` + "`" + `, {{.SelectListKeys}})
 }
 
+func (dao *{{.DAO}}) ListAll(_session ...*gocql.Session) ([]*{{.ModelType}}, error) {
+  session, err, close := dao.session(_session...)
+  if err != nil {
+    return nil, err
+  } else if close {
+    defer session.Close()
+  }
+
+  return dao.list(session, ` + "`" + `SELECT {{.InsertFields}} FROM {{.Keyspace}}.{{.Table}};` + "`" + `)
+}
+
 func (dao *{{.DAO}}) Stream({{.SelectListKeys}} interface{}) chan *{{.Model}}Stream {
   return dao.stream(` + "`" + `SELECT {{.InsertFields}} FROM {{.Keyspace}}.{{.Table}} WHERE {{.SelectList}};` + "`" + `, {{.SelectListKeys}})
+}
+
+func (dao *{{.DAO}}) StreamAll() chan *{{.Model}}Stream {
+  return dao.stream(` + "`" + `SELECT {{.InsertFields}} FROM {{.Keyspace}}.{{.Table}};` + "`" + `)
 }
 
 func (dao *{{.DAO}}) Delete(r *{{.ModelType}}, _session ...*gocql.Session) error {
