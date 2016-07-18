@@ -15,24 +15,18 @@ import (
 	"go/format"
 )
 
-var (
-	table = flag.String("table", "", "Table definition, must correspond to a .json file")
-	dao   = flag.String("dao", "", "DAO type; resulting output file srcdir/<dao>_gen.go")
-)
-
 // Usage is a replacement usage function for the flags package.
 func Usage() {
 	fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
-	fmt.Fprintf(os.Stderr, "\tgocql-gen [flags] -table <T.json> -dao S\n")
+	fmt.Fprintf(os.Stderr, "\tgocql-gen\n")
 	fmt.Fprintf(os.Stderr, "For more information, see:\n")
 	fmt.Fprintf(os.Stderr, "\thttps://github.com/timthesinner/gocql-gen\n")
-	fmt.Fprintf(os.Stderr, "Flags:\n")
-	flag.PrintDefaults()
 }
 
 type tableDef struct {
 	Model         string       `json:"modelName"`
 	Table         string       `json:"tableName"`
+	DAO           string       `json:"dao"`
 	GeneratedName string       `json:"generatedName"`
 	Columns       []*columnDef `json:"columns"`
 }
@@ -45,10 +39,12 @@ type columnDef struct {
 }
 
 type persistDef struct {
-	Keyspace          string   `json:"keyspace"`
-	Package           string   `json:"package"`
-	AdditionalImports []string `json:"imports"`
-	ModelImport       string   `json:"modelPackage"`
+	Keyspace          string      `json:"keyspace"`
+	Package           string      `json:"package"`
+	BoilerPlate       string      `json:"boilerplate"`
+	AdditionalImports []string    `json:"imports"`
+	ModelImport       string      `json:"modelPackage"`
+	Tables            []*tableDef `json:"tables"`
 }
 
 var COLLECTION_REGEX = regexp.MustCompile(`list<(.*)>|set<(.*)>`)
@@ -71,116 +67,115 @@ func main() {
 	flag.Usage = Usage
 	flag.Parse()
 
-	if len(*table) == 0 {
-		flag.Usage()
-		os.Exit(2)
-	}
-
-	if len(*dao) == 0 {
-		flag.Usage()
-		os.Exit(2)
-	}
-
 	var persist *persistDef
-	var table_def *tableDef
 	if p, err := open("persist-config.json"); err != nil {
 		log.Fatal(err)
 	} else if err := json.NewDecoder(p).Decode(&persist); err != nil {
 		log.Fatal(err)
-	} else if m, err := open(*table + ".json"); err != nil {
-		log.Fatal(err)
-	} else if err := json.NewDecoder(m).Decode(&table_def); err != nil {
-		log.Fatal(err)
-	} else if len(table_def.Columns) == 0 {
-		log.Fatalf("The %v column definition was empty.", *table)
+	} else if len(persist.Tables) == 0 {
+		log.Fatalf("At least one table must be defined")
 	} else {
-		model := _DAOModel{
-			Keyspace:          persist.Keyspace,
-			Package:           persist.Package,
-			AdditionalImports: persist.AdditionalImports,
-			ModelImport:       persist.ModelImport,
-			Model:             table_def.Model,
-			Table:             table_def.Table,
-			DAO:               *dao,
-			IncludeTime:       false,
-		}
-
-		for _, col := range table_def.Columns {
-			//model.Columns = append(model.Columns, col.Name+" "+col.CqlType)
-			switch col.Key {
-			case "partition":
-				model.partitioningKeys = append(model.partitioningKeys, col.Name)
-				model.keys = append(model.keys, col.Name)
-			case "cluster", "cluster-asc", "cluster-desc":
-				model.clusteringKeys = append(model.clusteringKeys, col.Name)
-				model.keys = append(model.keys, col.Name)
+		for _, table_def := range persist.Tables {
+			if len(table_def.Columns) == 0 {
+				log.Fatalf("Table %v had no columns defined", table_def.Table)
 			}
 
-			switch col.Key {
-			case "cluster-asc":
-				model.clusteringOrder = append(model.clusteringOrder, col.Name+" ASC")
-			case "cluster-desc":
-				model.clusteringOrder = append(model.clusteringOrder, col.Name+" DESC")
+			model := _DAOModel{
+				Keyspace:          persist.Keyspace,
+				Package:           persist.Package,
+				BoilerPlate:       persist.BoilerPlate,
+				AdditionalImports: persist.AdditionalImports,
+				ModelImport:       persist.ModelImport,
+				Model:             table_def.Model,
+				Table:             table_def.Table,
+				DAO:               table_def.DAO,
+				IncludeTime:       false,
 			}
 
-			column := &param{Name: col.Name, CqlType: col.CqlType}
-			switch col.CqlType {
-			case "text":
-				column.GoType = "string"
-			case "uuid", "timeuuid":
-				column.GoType = "*gocql.UUID"
-			case "int":
-				column.GoType = "int"
-			case "double":
-				column.GoType = "float64"
-			case "timestamp":
-				column.GoType = "*time.Time"
-				model.IncludeTime = true
-			case "list<blob>":
-				column.GoType = "[][]byte"
-				column.SerializedType = col.DeserializeFromBlob
-			case "map<text,blob>":
-				column.GoType = "map[string][]byte"
-				column.SerializedType = col.DeserializeFromBlob
-			default:
-				if match := COLLECTION_REGEX.FindStringSubmatch(col.CqlType); len(match) == 3 {
-					t := match[1]
-					if t == "" {
-						t = match[2]
+			for _, col := range table_def.Columns {
+				//model.Columns = append(model.Columns, col.Name+" "+col.CqlType)
+				switch col.Key {
+				case "partition":
+					model.partitioningKeys = append(model.partitioningKeys, col.Name)
+					model.keys = append(model.keys, col.Name)
+				case "cluster", "cluster-asc", "cluster-desc":
+					model.clusteringKeys = append(model.clusteringKeys, col.Name)
+					model.keys = append(model.keys, col.Name)
+				}
+
+				switch col.Key {
+				case "cluster-asc":
+					model.clusteringOrder = append(model.clusteringOrder, col.Name+" ASC")
+				case "cluster-desc":
+					model.clusteringOrder = append(model.clusteringOrder, col.Name+" DESC")
+				}
+
+				column := &param{Name: col.Name, CqlType: col.CqlType}
+				switch col.CqlType {
+				case "text":
+					column.GoType = "string"
+				case "uuid", "timeuuid":
+					column.GoType = "*gocql.UUID"
+				case "int":
+					column.GoType = "int"
+				case "double":
+					column.GoType = "float64"
+				case "timestamp":
+					column.GoType = "*time.Time"
+					model.IncludeTime = true
+				case "list<blob>":
+					column.GoType = "[][]byte"
+					column.SerializedType = col.DeserializeFromBlob
+					if column.SerializedType != "" {
+						model.IncludeJson = true
 					}
-					switch t {
-					case "text":
-						column.GoType = "[]string"
-					case "uuid", "timeuuid":
-						column.GoType = "[]*gocql.UUID"
-					case "timestamp":
-						column.GoType = "[]time.Time"
-						model.IncludeTime = true
-					case "int":
-						column.GoType = "[]int"
-					case "double":
-						column.GoType = "[]float64"
-					case "blob":
-						column.GoType = "[][]byte"
+				case "map<text,blob>":
+					column.GoType = "map[string][]byte"
+					column.SerializedType = col.DeserializeFromBlob
+					if column.SerializedType != "" {
+						model.IncludeJson = true
+					}
+				default:
+					if match := COLLECTION_REGEX.FindStringSubmatch(col.CqlType); len(match) == 3 {
+						t := match[1]
+						if t == "" {
+							t = match[2]
+						}
+						switch t {
+						case "text":
+							column.GoType = "[]string"
+						case "uuid", "timeuuid":
+							column.GoType = "[]*gocql.UUID"
+						case "timestamp":
+							column.GoType = "[]time.Time"
+							model.IncludeTime = true
+						case "int":
+							column.GoType = "[]int"
+						case "double":
+							column.GoType = "[]float64"
+						case "blob":
+							column.GoType = "[][]byte"
+						}
 					}
 				}
+				model.Columns = append(model.Columns, column)
 			}
-			model.Columns = append(model.Columns, column)
-		}
 
-		var result bytes.Buffer
-		if template, err := template.New("DaoTemplate").Parse(_DAOTemplate); err != nil {
-			log.Fatalf("DAOTemplate was not legal: %v", err)
-		} else if dao, err := os.Create(strings.ToLower(fmt.Sprintf("%v_gen.go", table_def.GeneratedName))); err != nil {
-			log.Fatalf("Could not create dao_gen source file: %v", err)
-		} else if err := template.Execute(&result, model); err != nil {
-			log.Fatalf("Error executing template: %v", err)
-		} else if res, err := format.Source(result.Bytes()); err != nil {
-			log.Fatalf("Error formatting template: %v", err)
-		} else if i, err := dao.Write(res); err != nil {
-			log.Fatalf("Error writing template: %v", err)
-		} else if i != len(res) {
-			log.Fatalf("Did not write all template bytes")
+			var result bytes.Buffer
+			if template, err := template.New("DaoTemplate").Parse(_DAOTemplate); err != nil {
+				log.Fatalf("DAOTemplate was not legal: %v", err)
+			} else if dao, err := os.Create(strings.ToLower(fmt.Sprintf("%v_gen.go", table_def.GeneratedName))); err != nil {
+				log.Fatalf("Could not create dao_gen source file: %v", err)
+			} else if err := template.Execute(&result, model); err != nil {
+				log.Fatalf("Error executing template for %v: %v", table_def.Table, err)
+			} else if res, err := format.Source(result.Bytes()); err != nil {
+				dao.Write(result.Bytes())
+				log.Fatalf("Error formatting template for %v: %v", table_def.Table, err)
+			} else if i, err := dao.Write(res); err != nil {
+				log.Fatalf("Error writing template for %v: %v", table_def.Table, err)
+			} else if i != len(res) {
+				log.Fatalf("Did not write all template bytes for %v", table_def.Table)
+			}
 		}
 	}
 }
@@ -189,16 +184,18 @@ type param struct {
 	Name           string
 	GoType         string
 	CqlType        string
-	SerializedType string
+	SerializedType string `json:"SerializedType,omitempty"`
 }
 
 type _DAOModel struct {
 	Package           string
 	AdditionalImports []string
 	IncludeTime       bool
+	IncludeJson       bool
 	Model             string
 	ModelImport       string
 	DAO               string
+	BoilerPlate       string
 
 	Keyspace string
 	Table    string
@@ -210,8 +207,32 @@ type _DAOModel struct {
 	keys             []string
 }
 
-func (m _DAOModel) Arguments() template.HTML {
-	return template.HTML(strings.Join(os.Args[1:], " "))
+func (m _DAOModel) InjectBoilerPlate() template.HTML {
+	if m.BoilerPlate == "" {
+		return template.HTML("")
+	} else if _, err := os.Stat(m.BoilerPlate); os.IsNotExist(err) {
+		log.Fatalf("Boiler plate template did not exist for %v: %v", m.Table, err)
+	}
+
+	var buff bytes.Buffer
+	if t, err := template.ParseFiles(m.BoilerPlate); err != nil {
+		log.Fatalf("Could not parse boiler plate for %v: %v", m.Table, err)
+	} else if err := t.Execute(&buff, m); err != nil {
+		log.Fatalf("Could not execute boiler plate template for %v: %v", m.Table, err)
+	}
+	return template.HTML(string(buff.Bytes()))
+}
+
+func (m _DAOModel) BaseImports() template.HTML {
+	res := []string{`"fmt"`}
+	if m.IncludeTime {
+		res = append(res, `"time"`)
+	}
+
+	if m.IncludeJson {
+		res = append(res, `"encoding/json"`)
+	}
+	return template.HTML(strings.Join(res, "\n"))
 }
 
 func (m _DAOModel) CleanAdditionalImports() template.HTML {
@@ -219,11 +240,6 @@ func (m _DAOModel) CleanAdditionalImports() template.HTML {
 	for i, im := range m.AdditionalImports {
 		res[i] = "  " + im
 	}
-
-	if m.IncludeTime {
-		res = append(res, "time")
-	}
-
 	return template.HTML(strings.Join(res, "\n"))
 }
 
@@ -378,6 +394,11 @@ func (m _DAOModel) DeserializeParameters() template.HTML {
 			}
 		}
 	}
+
+	if len(deser) == 0 {
+		return template.HTML("")
+	}
+
 	return template.HTML(strings.Join(deser, "\n"))
 }
 
@@ -408,10 +429,15 @@ func (m _DAOModel) SerializeParameters() template.HTML {
 			}
 		}
 	}
+
+	if len(ser) == 0 {
+		return template.HTML("")
+	}
+
 	return template.HTML(strings.Join(ser, "\n") + "\n")
 }
 
-const _DAOTemplate = `// Code generated by "gocql-gen {{.Arguments}}"; DO NOT EDIT THIS FILE
+const _DAOTemplate = `// Code generated by "gocql-gen"; DO NOT EDIT THIS FILE
 /*
  *
  * Model that generated this code: {{.RawJSON}}
@@ -420,13 +446,14 @@ const _DAOTemplate = `// Code generated by "gocql-gen {{.Arguments}}"; DO NOT ED
 package {{.Package}}
 
 import (
-  "encoding/json"
-  "fmt"
+{{.BaseImports}}
 
   "github.com/gocql/gocql"
 
 {{.CleanAdditionalImports}}
 )
+
+{{.InjectBoilerPlate}}
 
 type {{.Model}}Stream struct {
   DTO *{{.ModelType}}
