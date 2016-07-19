@@ -413,14 +413,18 @@ func (m _DAOModel) DeserializeParameters() template.HTML {
 				deser = append(deser, fmt.Sprintf(`
     for _, v := range %v {
       var value %v
-      json.Unmarshal(v, &value)
+      if derr := json.Unmarshal(v, &value); derr != nil {
+        fmt.Println("Could not unmarshal value", derr, v)
+      }
       resource.%v = append(resource.%v, value)
     }`, c.Name, c.SerializedType, c.Name, c.Name))
 			} else if c.CqlType == "map<text,blob>" {
 				deser = append(deser, fmt.Sprintf(`
     for k, v := range %v {
       var value %v
-      json.Unmarshal(v, &value)
+      if derr := json.Unmarshal(v, &value); derr != nil {
+        fmt.Println("Could not unmarshal value", derr, v)
+      }
       resource.%v[k] = value
     }`, c.Name, c.SerializedType, c.Name))
 			}
@@ -442,20 +446,20 @@ func (m _DAOModel) SerializeParameters() template.HTML {
 				ser = append(ser, fmt.Sprintf(`
   %v := make([][]byte, 0)
   for _, v := range r.%v {
-    if value, err := json.Marshal(v); err == nil {
+    if value, serr := json.Marshal(v); serr == nil {
       %v = append(%v, value)
     } else {
-      fmt.Println("Could not marshal value:", err, v)
+      fmt.Println("Could not marshal value:", serr, v)
     }
   }`, c.Name, c.Name, c.Name, c.Name))
 			} else if c.CqlType == "map<text,blob>" {
 				ser = append(ser, fmt.Sprintf(`
   %v := make(map[string][]byte)
   for k, v := range r.%v {
-    if value, err := json.Marshal(v); err == nil {
+    if value, serr := json.Marshal(v); serr == nil {
       %v[k] = value
     } else {
-      fmt.Println("Could not marshal attribute:", k, err, v)
+      fmt.Println("Could not marshal attribute:", k, serr, v)
     }
   }`, c.Name, c.Name, c.Name))
 			}
@@ -546,8 +550,15 @@ func (dao *{{.DAO}}) Init(session *gocql.Session) (error) {
   ){{.ClusteringOrder}};` + "`" + `).Exec()
 }
 
-func (dao *{{.DAO}}) Add(r *{{.ModelType}}, session *gocql.Session) (*{{.ModelType}}, error) { {{.SerializeParameters}}
-  err := session.Query(` + "`" + `INSERT INTO {{.Keyspace}}.{{.Table}} ({{.InsertFields}})
+func (dao *{{.DAO}}) Add(r *{{.ModelType}}, _session ...*gocql.Session) (*{{.ModelType}}, error) {
+  session, err, close := dao.session(_session...)
+  if err != nil {
+    return nil, err
+  } else if close {
+    defer session.Close()
+  }
+  {{.SerializeParameters}}
+  err = session.Query(` + "`" + `INSERT INTO {{.Keyspace}}.{{.Table}} ({{.InsertFields}})
                       VALUES ({{.InsertValues}});` + "`" + `,
                       {{.InsertResource}}).Exec()
   if err != nil {
@@ -612,6 +623,10 @@ func (dao *{{.DAO}}) Delete(r *{{.ModelType}}, _session ...*gocql.Session) error
   }
 
   return dao.delete(session, ` + "`" + `DELETE FROM {{.Keyspace}}.{{.Table}} WHERE {{.SelectSingle}};` + "`" + `, {{.DeleteKeys}})
+}
+
+func (dao *{{.DAO}}) DropTable(r *{{.ModelType}}, session *gocql.Session) error {
+  return session.Query(` + "`" + `DROP TABLE IF EXISTS {{.Keyspace}}.{{.Table}};` + "`" + `).Exec()
 }
 
 func (dao *{{.DAO}}) session(_session ...*gocql.Session) (*gocql.Session, error, bool) {
