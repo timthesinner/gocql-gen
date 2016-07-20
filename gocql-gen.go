@@ -625,7 +625,7 @@ func (dao *{{.DAO}}) Delete(r *{{.ModelType}}, _session ...*gocql.Session) error
   return dao.delete(session, ` + "`" + `DELETE FROM {{.Keyspace}}.{{.Table}} WHERE {{.SelectSingle}};` + "`" + `, {{.DeleteKeys}})
 }
 
-func (dao *{{.DAO}}) DropTable(r *{{.ModelType}}, session *gocql.Session) error {
+func (dao *{{.DAO}}) DropTable(session *gocql.Session) error {
   return session.Query(` + "`" + `DROP TABLE IF EXISTS {{.Keyspace}}.{{.Table}};` + "`" + `).Exec()
 }
 
