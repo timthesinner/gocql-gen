@@ -684,7 +684,7 @@ func (dao *{{.DAO}}) list(session *gocql.Session, cql string, params ...interfac
 
   session.SetPageSize(dao.pageSize())
   iter := session.Query(cql, params...).Iter()
-  results := make([]*{{.ModelType}}, dao.capacity())
+  results := make([]*{{.ModelType}}, 0, dao.capacity())
   for iter.Scan({{.GetScanParameters}}) {
     resource := &{{.ModelType}}{
 {{.CreateResourceFromParameters}}
